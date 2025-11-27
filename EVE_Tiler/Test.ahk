@@ -3,13 +3,8 @@
 ; -------------------------------------------------------------
 ; LOG FILE: %TEMP%\EVE_Tiler.log
 ; Hotkeys:
-;   Ctrl+Win+R  → pick region (click–click) → choose clients → tile
-;   Ctrl+Win+L  → re-tile last selection
-;   Ctrl+Win+Q  → close all clones
-;   Ctrl+Win+Y  → DEBUG: clone full client (no region)
+;   Ctrl+Win+X  → close all clones
 ;   Ctrl+Win+G  → open Groups Manager
-;   Ctrl+Win+T  → tile currently selected group
-;   Ctrl+Win+N  → quick new group
 ; =============================================================
 
 #NoEnv
@@ -2525,3 +2520,4 @@ LaunchGroup(name) {
     StartAutoRetile()
     IsLaunching := 0
 }
+
