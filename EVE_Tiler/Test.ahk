@@ -1,4 +1,4 @@
-﻿; =============================================================
+; =============================================================
 ; EVE Multibox Tiler — AutoHotkey v1 (Unicode)
 ; -------------------------------------------------------------
 ; LOG FILE: %TEMP%\EVE_Tiler.log
@@ -40,7 +40,7 @@ SEL_MIN_W := 80
 SEL_MIN_H := 60
 
 ; --- debugging ---
-DEBUG := true
+DEBUG := false
 LOG_PATH := A_Temp "\EVE_Tiler.log"
 
 OnExit, _Cleanup   ; do NOT return here!
@@ -56,7 +56,7 @@ LABEL_COLOR   := "FFFF00"  ; default yellow
 LABEL_OFF_X   := 8
 LABEL_OFF_Y   := 6
 SetTitleMatchMode, 3   ; exact window titles only
-DEBUG_VERBOSE := 1
+DEBUG_VERBOSE := 0
 
 ; ============================================================
 ;                      NEW: GROUPS/PERSIST
@@ -86,12 +86,12 @@ __RETIPLE_AT := 0          ; debounce timestamp (ms)
 
 ; Defaults when creating a new group
 DEF_GROUP := { members: []
-             , region: ""
-             , layout: { mode: "auto", cols: 0, rows: 0 }
-             , monitor: TARGET_MONITOR
-             , gapX: GAP_X
-             , gapY: GAP_Y
-             , scale: REGION_SCALE }
+            , region: ""
+            , layout: { mode: "auto", cols: 0, rows: 0 }
+            , monitor: TARGET_MONITOR
+            , gapX: GAP_X
+            , gapY: GAP_Y
+            , scale: REGION_SCALE }
 
 ; -------------------- SANITY --------------------
 if !FileExist(OTR_PATH) {
@@ -125,8 +125,10 @@ if !FileExist(__cfgDir)
     FileCreateDir, %__cfgDir%
 
 ; One-time diagnostic so you can see EXACTLY where it’s looking.
-; (Comment this MsgBox out later if you want.)
-MsgBox, 64, EVE Tiler, % "CFG_FILE:`n" CFG_FILE "`nExists: " (FileExist(CFG_FILE) ? "YES" : "NO")
+; For production, keep this behind DEBUG so it doesn't nag every launch.
+if (DEBUG) {
+    MsgBox, 64, EVE Tiler (debug), % "CFG_FILE:`n" CFG_FILE "`nExists: " (FileExist(CFG_FILE) ? "YES" : "NO")
+}
 
 
 StartAutoRetile()   ; now runs properly
@@ -884,10 +886,10 @@ DBG_ShowSummary(label := "") {
             fail++
 
         body .= (o.ok ? "[OK]   " : "[FAIL] ")
-             . o.title
-             . "  attempts=" . o.attempts
-             . "  hwnds=" . o.hwnds
-             . "  " . o.elapsed . "ms`n"
+            . o.title
+            . "  attempts=" . o.attempts
+            . "  hwnds=" . o.hwnds
+            . "  " . o.elapsed . "ms`n"
     }
     if (body = "")
         body := "(no launches recorded)"
@@ -932,13 +934,13 @@ _robustLaunchOTR(args, wait_ms := 4000, tries := 4, title := "") {
     elapsed := A_TickCount - t0
     if (DEBUG_VERBOSE) {
         LogBlock("OTR-SPAWN", { title: (title!=""?title:"(n/a)")
-                              , ok: ok, pid: pid, attempts: attempt
-                              , hwnds: hwnds, waited_ms: elapsed })
+                            , ok: ok, pid: pid, attempts: attempt
+                            , hwnds: hwnds, waited_ms: elapsed })
     }
     ; keep a short in-memory summary for on-screen report
     DBG_LastLaunches.Push({ title: (title!=""?title:"(n/a)"), ok: ok
-                          , pid: pid, attempts: attempt
-                          , elapsed: elapsed, hwnds: hwnds })
+                        , pid: pid, attempts: attempt
+                        , elapsed: elapsed, hwnds: hwnds })
     return pid
 }
 
@@ -964,7 +966,7 @@ EnsureSourceReadyExact(title) {
     cw := NumGet(rc,8,"Int"), ch := NumGet(rc,12,"Int")
 
     LogBlock("SRC-READY", { title: title, found: 1, minimized: mm, cloaked: isC
-                          , client: cw "x" ch })
+                        , client: cw "x" ch })
     return h
 }
 
@@ -993,229 +995,183 @@ CleanupLaunch(ByRef oldMon:="", ByRef oldGX:="", ByRef oldGY:="", ByRef oldScale
     IsLaunching := 0
 }
 
+; ================= Overlay Labels (simple timer, click-through, topmost) =================
+; One timer drives all label movement. Very robust with OTR.
 
-; ================= Overlay Labels (cached + async, click-through, topmost) =================
-Overlays := {}        ; map ownerHWND -> { lbl: hLbl, fn: fnRef }
-OverlayCache := {}    ; cache for reuse by label text/title
-OverlaysHidden := false
+Overlays := {}            ; map ownerHWND -> { lbl:hLbl, offX:int, offY:int }
+OverlaysHidden := false   ; global hide flag (used by region picker)
+OVERLAY_TIMER_RUNNING := 0
 
-; --- show (or reuse) label instantly ---
-; --- show (or reuse) label instantly ---
-Overlay_Attach(ownerHwnd, text, colorHex:="FFFF00", offX:=8, offY:=6) {
-    global Overlays, OverlayCache
-    if (!ownerHwnd || !DllCall("IsWindow","ptr",ownerHwnd))
-        return 0
-
-    key := ownerHwnd "|" text "|" colorHex  ; <-- unique per owner
-
-    if (OverlayCache.HasKey(key)) {
-        o := OverlayCache[key]
-        if (DllCall("IsWindow","ptr",o.hLbl)) {
-            VarSetCapacity(rc,16,0)
-            if DllCall("GetWindowRect","ptr",ownerHwnd,"ptr",&rc) {
-                x := NumGet(rc,0,"Int"), y := NumGet(rc,4,"Int")
-                DllCall("SetWindowPos","ptr",o.hLbl,"ptr",-1
-                    ,"int",x+offX,"int",y+offY,"int",0,"int",0,"uint",0x0011)
-            }
-            ; make sure follow timer exists
-            if (!IsObject(o.fn)) {
-                fn := Func("Overlay__Follow").Bind(o.hLbl, ownerHwnd, offX, offY)
-                SetTimer, %fn%, 50
-                o.fn := fn
-                OverlayCache[key] := o
-            }
-            Overlays[ownerHwnd] := { lbl:o.hLbl, fn:o.fn }
-            return o.hLbl
-        } else {
-            OverlayCache.Delete(key)
+Overlay_StartTimer() {
+    global OVERLAY_TIMER_RUNNING
+    if (!OVERLAY_TIMER_RUNNING) {
+        SetTimer, Overlay_FollowAll, 50
+        OVERLAY_TIMER_RUNNING := 1
     }
-
-    fn := Func("_CreateOverlayLabel").Bind(ownerHwnd, text, colorHex, offX, offY)
-    SetTimer, %fn%, -25
-    return 1
 }
 
+Overlay_StopTimerIfNone() {
+    global Overlays, OVERLAY_TIMER_RUNNING
+    if (!IsObject(Overlays) || Overlays.MaxIndex() = "") {
+        SetTimer, Overlay_FollowAll, Off
+        OVERLAY_TIMER_RUNNING := 0
+    }
+}
 
+; PUBLIC: attach a label to an owner window (OTR clone)
+Overlay_Attach(ownerHwnd, text, colorHex:="FFFF00", offX:=8, offY:=6) {
+    global Overlays, OverlaysHidden
 
-_CreateOverlayLabel(ownerHwnd, text, colorHex:="FFFF00", offX:=8, offY:=6) {
-    global Overlays, OverlayCache, OverlaysHidden
     if (!ownerHwnd || !DllCall("IsWindow","ptr",ownerHwnd))
         return 0
 
     if (!IsObject(Overlays))
         Overlays := {}
-    if (!IsObject(OverlayCache))
-        OverlayCache := {}
 
-    key := ownerHwnd "|" text "|" colorHex
-
-    ; ---------- Reuse cached label if still valid ----------
-    if (OverlayCache.HasKey(key)) {
-        o := OverlayCache[key]
-        if (o.hLbl && DllCall("IsWindow","ptr",o.hLbl)) {
-            ; refresh position
-            VarSetCapacity(rc,16,0)
-            if DllCall("GetWindowRect","ptr",ownerHwnd,"ptr",&rc) {
-                x := NumGet(rc,0,"Int"), y := NumGet(rc,4,"Int")
-                DllCall("SetWindowPos","ptr",o.hLbl,"ptr",-1
-                    ,"int",x+offX,"int",y+offY,"int",0,"int",0,"uint",0x0011) ; NOSIZE|NOACTIVATE
-            }
-            ; ensure timer exists (e.g. script reload)
-            if (!IsObject(o.fn)) {
-                fn := Func("Overlay__Follow").Bind(o.hLbl, ownerHwnd, offX, offY)
-                SetTimer, %fn%, 50
-                o.fn := fn
-                OverlayCache[key] := o
-            }
-            ; live table is keyed by owner hwnd
-            Overlays[ownerHwnd] := { lbl:o.hLbl, fn:o.fn }
-            if (OverlaysHidden) {
-                h := o.hLbl
-                WinHide, ahk_id %h%
-            }
-            return o.hLbl
-        } else {
-            OverlayCache.Delete(key)
-        }
+    ; if already attached, just update offsets and reposition
+    if (Overlays.HasKey(ownerHwnd)) {
+        o := Overlays[ownerHwnd]
+        o.offX := offX
+        o.offY := offY
+        Overlays[ownerHwnd] := o
+        Overlay_UpdatePosition(ownerHwnd)
+        return o.lbl
     }
 
-    ; ---------- Create a new overlay label ----------
-    Gui, New, +AlwaysOnTop -Caption +ToolWindow +E0x20 +HwndhLbl +Owner%ownerHwnd%
+    ; ---- create a fresh overlay GUI ----
+    Gui, New, +AlwaysOnTop -Caption +ToolWindow +E0x20 +HwndhLbl
     Gui, Margin, 0, 0
     Gui, Color, 000000
     Gui, Font, s10 Bold c%colorHex%, Segoe UI
     Gui, Add, Text, BackgroundTrans, %text%
 
-    ; initial position near owner
-    VarSetCapacity(rc,16,0)
-    if DllCall("GetWindowRect","ptr",ownerHwnd,"ptr",&rc) {
-        x := NumGet(rc,0,"Int"), y := NumGet(rc,4,"Int")
-    } else {
-        WinGetPos, x, y,,, ahk_id %ownerHwnd%
-    }
-    Gui, Show, NoActivate x%x% y%y%
+    ; show somewhere; Overlay_UpdatePosition will place it correctly
+    Gui, Show, NoActivate x0 y0
 
-    ; styles: click-through, layered, toolwindow
-    ex := DllCall("GetWindowLong" (A_PtrSize=8?"Ptr":""), "ptr",hLbl, "int",-20, "ptr")
-    ex |= 0x00000020  ; WS_EX_TRANSPARENT
-    ex |= 0x00080000  ; WS_EX_LAYERED
-    ex |= 0x00000080  ; WS_EX_TOOLWINDOW
-    DllCall("SetWindowLong" (A_PtrSize=8?"Ptr":""), "ptr",hLbl, "int",-20, "ptr",ex)
+    ; extended styles: click-through, layered, toolwindow, no-activate
+    ex := DllCall("GetWindowLong" (A_PtrSize=8 ? "Ptr" : "")
+                , "ptr", hLbl, "int", -20, "ptr")
+    ex |= 0x00000020    ; WS_EX_TRANSPARENT (click-through)
+    ex |= 0x00080000    ; WS_EX_LAYERED
+    ex |= 0x00000080    ; WS_EX_TOOLWINDOW
+    ex |= 0x08000000    ; WS_EX_NOACTIVATE
+    DllCall("SetWindowLong" (A_PtrSize=8 ? "Ptr" : "")
+        , "ptr", hLbl, "int", -20, "ptr", ex)
 
-    ; place above owner, don’t activate
-    if (DllCall("IsWindow","ptr",hLbl))
-        DllCall("SetWindowPos","ptr",hLbl,"ptr",-1
-            ,"int",x+offX,"int",y+offY,"int",0,"int",0,"uint",0x0011)
-
-    ; wait a tick for stable owner rect then re-align (prevents 0,0 overlap)
-    VarSetCapacity(rc,16,0)
-    Loop 6 {
-        if DllCall("GetWindowRect","ptr",ownerHwnd,"ptr",&rc)
-            break
-        Sleep, 40
-    }
-    x := NumGet(rc,0,"Int"), y := NumGet(rc,4,"Int")
-    if (DllCall("IsWindow","ptr",hLbl))
-        DllCall("SetWindowPos","ptr",hLbl,"ptr",-1
-            ,"int",x+offX,"int",y+offY,"int",0,"int",0,"uint",0x0011)
-
-    ; ---------- Start follower timer + register ----------
-    fn := Func("Overlay__Follow").Bind(hLbl, ownerHwnd, offX, offY)
-    SetTimer, %fn%, 50
-
-    Overlays[ownerHwnd] := { lbl:hLbl, fn:fn }    ; live table
-    OverlayCache[key]   := { hLbl:hLbl, fn:fn }   ; reuse table
+    Overlays[ownerHwnd] := { lbl:hLbl, offX:offX, offY:offY }
 
     if (OverlaysHidden) {
-        h := hLbl
-        WinHide, ahk_id %h%
+        WinHide, ahk_id %hLbl%
+    } else {
+        Overlay_UpdatePosition(ownerHwnd)
     }
 
+    Overlay_StartTimer()
     return hLbl
 }
 
-
-
-Overlay__Follow(hLbl, ownerHwnd, offX, offY) {
-    global Overlays
-
-    ; --- life checks: owner first, then label ---
-    if (!ownerHwnd || !DllCall("IsWindow","ptr",ownerHwnd))
+; Position a single overlay relative to its owner
+Overlay_UpdatePosition(ownerHwnd) {
+    global Overlays, OverlaysHidden
+    if (!IsObject(Overlays))
         return
-    if (!hLbl || !DllCall("IsWindow","ptr",hLbl))
-        return
-
-    ; owner minimized or invisible? keep label hidden
-    WinGet, mm, MinMax, ahk_id %ownerHwnd%
-    if (mm = 1) {
-        if (DllCall("IsWindow","ptr",hLbl))
-            WinHide, ahk_id %hLbl%
-        return
-    }
-    WinGet, style, Style, ahk_id %ownerHwnd%
-    if !(style & 0x10000000) {
-        if (DllCall("IsWindow","ptr",hLbl))
-            WinHide, ahk_id %hLbl%
-        return
-    }
-    WinShow, ahk_id %hLbl%
-
-    ; get top-left of owner (DWM-correct)
-    VarSetCapacity(rc, 16, 0)
-    if !DllCall("GetWindowRect","ptr",ownerHwnd,"ptr",&rc)
-        return
-    x := NumGet(rc,0,"Int"), y := NumGet(rc,4,"Int")
-
-    ; move above owner, don't activate
-    if (DllCall("IsWindow","ptr",hLbl))  ; final guard
-        DllCall("SetWindowPos","ptr",hLbl,"ptr",-1
-            ,"int",x+offX,"int",y+offY,"int",0,"int",0,"uint",0x0011) ; NOSIZE|NOACTIVATE
-
-    ; keep styles asserted
-    if (DllCall("IsWindow","ptr",hLbl)) {
-        ex := DllCall("GetWindowLong" (A_PtrSize=8?"Ptr":""), "ptr",hLbl, "int",-20, "ptr")
-        ex |= 0x00000020 | 0x00080000 | 0x00000080
-        DllCall("SetWindowLong" (A_PtrSize=8?"Ptr":""), "ptr",hLbl, "int",-20, "ptr",ex)
-    }
-}
-
-Overlay_Destroy(ownerHwnd) {
-    global Overlays, OverlayCache
     if (!Overlays.HasKey(ownerHwnd))
         return
 
     o := Overlays[ownerHwnd]
-
-    ; --- stop timer safely (only if it’s a real bound Func) ---
-    if (IsObject(o) && IsObject(o.fn)) {
-        t := o.fn                 ; v1-safe: put property into a temp var
-        SetTimer, %t%, Off        ; turn off the follow timer
+    hLbl := o.lbl
+    if (!hLbl || !DllCall("IsWindow","ptr",hLbl))
+        return
+    if (!DllCall("IsWindow","ptr",ownerHwnd)) {
+        ; owner died – clean up
+        this_id := hLbl
+        WinClose, ahk_id %this_id%
+        Overlays.Delete(ownerHwnd)
+        Overlay_StopTimerIfNone()
+        return
     }
 
-    ; --- close the overlay window if it still exists ---
-    if (o.lbl && DllCall("IsWindow","ptr", o.lbl)) {
-        this_id := o.lbl          ; v1-safe temp var before percent-expansion
+    offX := o.offX
+    offY := o.offY
+
+    ; respect global hide flag
+    if (OverlaysHidden) {
+        WinHide, ahk_id %hLbl%
+        return
+    }
+
+    ; hide when owner is minimized or invisible
+    WinGet, mm, MinMax, ahk_id %ownerHwnd%
+    if (mm = 1) {
+        WinHide, ahk_id %hLbl%
+        return
+    }
+    WinGet, style, Style, ahk_id %ownerHwnd%
+    if !(style & 0x10000000) {   ; WS_VISIBLE
+        WinHide, ahk_id %hLbl%
+        return
+    }
+
+    VarSetCapacity(rc, 16, 0)
+    if !DllCall("GetWindowRect","ptr",ownerHwnd,"ptr",&rc)
+        return
+    x := NumGet(rc,0,"Int")
+    y := NumGet(rc,4,"Int")
+
+    ; keep overlay on top of everything, no focus steal
+    WinShow, ahk_id %hLbl%
+    DllCall("SetWindowPos","ptr",hLbl,"ptr",-1
+        ,"int",x+offX,"int",y+offY,"int",0,"int",0,"uint",0x0011) ; NOSIZE|NOACTIVATE
+}
+
+; Timer: follow all overlays
+Overlay_FollowAll:
+    global Overlays
+    if (!IsObject(Overlays) || Overlays.MaxIndex() = "")
+        return
+    for ownerHwnd, o in Overlays
+        Overlay_UpdatePosition(ownerHwnd)
+return
+
+; Destroy overlay for a single owner
+Overlay_Destroy(ownerHwnd) {
+    global Overlays
+    if (!IsObject(Overlays))
+        return
+    if (!Overlays.HasKey(ownerHwnd))
+        return
+    o := Overlays[ownerHwnd]
+    if (o.lbl && DllCall("IsWindow","ptr",o.lbl)) {
+        this_id := o.lbl
         WinClose, ahk_id %this_id%
     }
-
     Overlays.Delete(ownerHwnd)
+    Overlay_StopTimerIfNone()
 }
 
-
+; Destroy all overlays
 Overlay_DestroyAll() {
-    global Overlays, OverlayCache
-    for hwnd, o in Overlays
-        Overlay_Destroy(hwnd)
+    global Overlays
+    if (!IsObject(Overlays))
+        return
+    for ownerHwnd, o in Overlays {
+        if (o.lbl && DllCall("IsWindow","ptr",o.lbl)) {
+            this_id := o.lbl
+            WinClose, ahk_id %this_id%
+        }
+    }
     Overlays := {}
-    OverlayCache := {}
+    Overlay_StopTimerIfNone()
 }
 
-; ---- Auto-hide/show helpers ----
+; Auto-hide/show helpers used by PickRegion_WithGuard()
 Overlays_HideAll() {
     global Overlays, OverlaysHidden
     OverlaysHidden := true
-    for hwnd, o in Overlays {
-        if (DllCall("IsWindow", "ptr", o.lbl)) {
+    if (!IsObject(Overlays))
+        return
+    for ownerHwnd, o in Overlays {
+        if (DllCall("IsWindow","ptr",o.lbl)) {
             this_id := o.lbl
             WinHide, ahk_id %this_id%
         }
@@ -1225,8 +1181,10 @@ Overlays_HideAll() {
 Overlays_ShowAll() {
     global Overlays, OverlaysHidden
     OverlaysHidden := false
-    for hwnd, o in Overlays {
-        if (DllCall("IsWindow", "ptr", o.lbl)) {
+    if (!IsObject(Overlays))
+        return
+    for ownerHwnd, o in Overlays {
+        if (DllCall("IsWindow","ptr",o.lbl)) {
             this_id := o.lbl
             WinShow, ahk_id %this_id%
         }
@@ -1382,7 +1340,7 @@ Sqrt(__n) {
 }
 
 ; ============================================================
-;                 NEW: GROUPS — MANAGER + PERSIST
+; EVE Multibox Tiler — Manager (clean layout)
 ; ============================================================
 OpenGroupManager(reopen:=false) {
     global Manager_hLV_Groups, Manager_hLV_Members, Manager_hLV_Clients
@@ -1395,65 +1353,109 @@ OpenGroupManager(reopen:=false) {
 
     DetectClients := DetectEVEClients()
 
-    Gui, MGR:New, +AlwaysOnTop +Resize +MinSize780x560, EVE Multibox Tiler — Manager
+    ; ----- main window -----
+    Gui, MGR:New, +AlwaysOnTop +Resize +MinSize820x540, EVE Multibox Tiler — Manager
     Gui, MGR:+DPIScale
-    Gui, MGR:Color, F7F7F7
-    Gui, MGR:Font, s10, Segoe UI
+    Gui, MGR:Color, F4F4F4
+    Gui, MGR:Font, s9, Segoe UI
     Gui, MGR:Margin, 12, 10
 
+    ; ------------------------------------------------------------------
+    ; Title + subtitle
+    ; ------------------------------------------------------------------
+    Gui, MGR:Font, s11 Bold, Segoe UI
+    Gui, MGR:Add, Text, xm ym, EVE Multibox Tiler
+    Gui, MGR:Font, s9 c555555, Segoe UI
+    Gui, MGR:Add, Text, x+8 yp+4, Window groups and tiled clones for EVE
+    Gui, MGR:Font, s9 c000000, Segoe UI
+
+    ; small vertical gap
+    Gui, MGR:Add, Text, xm y+4, 
+
+    ; ------------------------------------------------------------------
     ; Top action bar
-    Gui, MGR:Add, Button, gMGR_NewGroup w92, New
-    Gui, MGR:Add, Button, x+6 gMGR_RenameGroup w92, Rename
-    Gui, MGR:Add, Button, x+6 gMGR_DeleteGroup w92, Delete
-    Gui, MGR:Add, Button, x+10 gMGR_PickRegion w110, Pick Region
-    Gui, MGR:Add, Button, x+6 gMGR_TileChecked w120 Default, Tile Checked
-    Gui, MGR:Add, Button, x+6 gMGR_CloseChecked w120, Close Checked
-    Gui, MGR:Add, Button, x+10 gMGR_Save w92, Save
-    Gui, MGR:Add, Button, x+6 gMGR_Load w92, Load
-    Gui, MGR:Add, Button, x+10 gMGR_SaveLayout w150, Save Layout from Clones
-    Gui, MGR:Add, Button, x+6  gMGR_ClearLayout w140, Clear Saved Layout
+    ; ------------------------------------------------------------------
+    Gui, MGR:Add, Button, gMGR_NewGroup       w80  h24 xm         , New
+    Gui, MGR:Add, Button, gMGR_RenameGroup   w80  h24 x+6        , Rename
+    Gui, MGR:Add, Button, gMGR_DeleteGroup   w80  h24 x+6        , Delete
+    Gui, MGR:Add, Button, gMGR_PickRegion    w90  h24 x+10       , Pick Region
+    Gui, MGR:Add, Button, gMGR_TileChecked   w100 h24 x+8 Default, Tile Checked
+    Gui, MGR:Add, Button, gMGR_CloseChecked  w100 h24 x+6        , Close Checked
+    Gui, MGR:Add, Button, gMGR_Save          w80  h24 x+10       , Save
+    Gui, MGR:Add, Button, gMGR_Load          w80  h24 x+6        , Load
+    Gui, MGR:Add, Button, gMGR_SaveLayout    w120 h24 x+10       , Save Layout
+    Gui, MGR:Add, Button, gMGR_ClearLayout   w110 h24 x+6        , Clear Layout
 
+    ; ------------------------------------------------------------------
     ; Options row
-    Gui, MGR:Add, Checkbox, xm y+10 vMGR_Accumulate Checked%MGR_Accumulate%, Keep existing clones (accumulate)
-    Gui, MGR:Add, Checkbox, x+20 vAUTO_RETILE gMGR_OnAutoRetile Checked%AUTO_RETILE%, Auto retile on window changes
+    ; ------------------------------------------------------------------
+    Gui, MGR:Add, Checkbox, xm   y+10 vMGR_Accumulate Checked%MGR_Accumulate%
+        , Keep existing clones (accumulate)
+    Gui, MGR:Add, Checkbox, x+30 yp vAUTO_RETILE gMGR_OnAutoRetile Checked%AUTO_RETILE%
+        , Auto retile on window changes
 
-    ; Settings group
-    Gui, MGR:Add, GroupBox, xm y+8 w740 h90, Layout & Placement
-    Gui, MGR:Add, Text, xp+10 yp+24, Layout:
-    Gui, MGR:Add, DropDownList, vMGR_Layout w110 gMGR_OnLayoutChoice, auto|grid
-    Gui, MGR:Add, Text, x+10, Cols:
-    Gui, MGR:Add, Edit, vMGR_Cols w60 Number, 0
-    Gui, MGR:Add, Text, x+10, Rows:
-    Gui, MGR:Add, Edit, vMGR_Rows w60 Number, 0
-    Gui, MGR:Add, Text, x+16, Mon:
-    Gui, MGR:Add, Edit, vMGR_Mon w50 Number, % TARGET_MONITOR
-    Gui, MGR:Add, Text, x+12, GapX:
-    Gui, MGR:Add, Edit, vMGR_GapX w60 Number, % GAP_X
-    Gui, MGR:Add, Text, x+10, GapY:
-    Gui, MGR:Add, Edit, vMGR_GapY w60 Number, % GAP_Y
-    Gui, MGR:Add, Text, x+12, Scale:
-    Gui, MGR:Add, Edit, vMGR_Scale w70, % REGION_SCALE
+    ; ------------------------------------------------------------------
+    ; Layout & placement group
+    ; ------------------------------------------------------------------
+    Gui, MGR:Add, GroupBox, xm y+10 w790 h90, Layout & placement
 
-    ; Lists area
-    Gui, MGR:Add, Text, xm y+12, Groups (check to include in tiling)
-    Gui, MGR:Add, ListView, hwndManager_hLV_Groups xm w240 r14 Checked gMGR_OnGroupClick, Group
+    ; First row inside groupbox
+    Gui, MGR:Add, Text,  xp+16 yp+26, Layout:
+    Gui, MGR:Add, DropDownList, vMGR_Layout w90 yp-3 x+4 gMGR_OnLayoutChoice, auto|grid
 
-    Gui, MGR:Add, Text, x+10 yp, Members in Group
-    Gui, MGR:Add, ListView, hwndManager_hLV_Members x+10 w280 r14 Multi gMGR_MembersLV, Character Title
+    Gui, MGR:Add, Text,  x+24 yp+3, Cols:
+    Gui, MGR:Add, Edit,  vMGR_Cols w40 yp-3 x+4 Number, 0
 
-    Gui, MGR:Add, Text, x+10 yp, Available Clients
-    Gui, MGR:Add, ListView, hwndManager_hLV_Clients x+10 w240 r14 Multi gMGR_ClientsLV, Window Title
+    Gui, MGR:Add, Text,  x+20 yp+3, Rows:
+    Gui, MGR:Add, Edit,  vMGR_Rows w40 yp-3 x+4 Number, 0
 
-    ; Member ops
-    Gui, MGR:Add, Button, xm y+8 w120 gMGR_AddMember, << Add
-    Gui, MGR:Add, Button, x+10 w120 gMGR_RemoveMember, Remove >>
+    Gui, MGR:Add, Text,  x+24 yp+3, Mon:
+    Gui, MGR:Add, Edit,  vMGR_Mon w36 yp-3 x+4 Number, %TARGET_MONITOR%
 
+    Gui, MGR:Add, Text,  x+24 yp+3, GapX:
+    Gui, MGR:Add, Edit,  vMGR_GapX w40 yp-3 x+4 Number, %GAP_X%
+
+    Gui, MGR:Add, Text,  x+20 yp+3, GapY:
+    Gui, MGR:Add, Edit,  vMGR_GapY w40 yp-3 x+4 Number, %GAP_Y%
+
+    Gui, MGR:Add, Text,  x+24 yp+3, Scale:
+    Gui, MGR:Add, Edit,  vMGR_Scale w60 yp-3 x+4, %REGION_SCALE%
+
+    ; ------------------------------------------------------------------
+    ; Groups / Members / Clients area
+    ; ------------------------------------------------------------------
+    Gui, MGR:Add, GroupBox, xm y+14 w790 h270, Groups & clients
+
+    ; column headers
+    Gui, MGR:Add, Text, xp+16 yp+24, Groups (check to auto-retile)
+    Gui, MGR:Add, Text, x+260 yp, Members in group
+    Gui, MGR:Add, Text, x+260 yp, Available clients
+
+    ; lists (three columns)
+    Gui, MGR:Add, ListView
+        , hwndManager_hLV_Groups xm+16 y+4 w230 r12 Checked gMGR_OnGroupClick
+        , Group
+    Gui, MGR:Add, ListView
+        , hwndManager_hLV_Members x+10 yp w260 r12 Multi gMGR_MembersLV
+        , Character title
+    Gui, MGR:Add, ListView
+        , hwndManager_hLV_Clients x+10 yp w260 r12 Multi gMGR_ClientsLV
+        , Window title
+
+    ; Add / Remove buttons centered under first two lists
+    Gui, MGR:Add, Button, xm+16    y+8 w120 gMGR_AddMember  , << Add
+    Gui, MGR:Add, Button, x+10     w120 gMGR_RemoveMember   , Remove >>
+
+    ; Status bar
     Gui, MGR:Add, StatusBar
     SB_SetText("Ready")
 
-    ; Populate lists
+    ; ------------------------------------------------------------------
+    ; Populate data
+    ; ------------------------------------------------------------------
     Gui, MGR:Default
 
+    ; groups list
     Gui, ListView, %Manager_hLV_Groups%
     LV_Delete()
     for name, g in Groups {
@@ -1463,16 +1465,21 @@ OpenGroupManager(reopen:=false) {
     }
     LV_ModifyCol(1, "AutoHdr")
 
+    ; clients list
     Gui, ListView, %Manager_hLV_Clients%
     LV_Delete()
     for idx, o in DetectClients
         LV_Add("", o.title)
     LV_ModifyCol(1, "AutoHdr")
 
+    ; members list for currently selected group
+    RefreshMembersLV()
+
+    ; restore layout controls from group
     if (SelectedGroup != "")
         ApplyGroupSettingsToControls(SelectedGroup)
 
-    Gui, MGR:Show, Center w800 h580
+    Gui, MGR:Show, Center w820 h560
 }
 
 
@@ -1618,21 +1625,24 @@ return
 PersistControlsIntoGroup() {
     global Groups, SelectedGroup
     global MGR_Layout, MGR_Cols, MGR_Rows, MGR_Mon, MGR_GapX, MGR_GapY, MGR_Scale
-    Gui, MGR:Submit, NoHide
+
     if (SelectedGroup = "" || !Groups.HasKey(SelectedGroup))
         return
+
     Gui, MGR:Submit, NoHide
+
     g := Groups[SelectedGroup]
     g.layout.mode := MGR_Layout
     g.layout.cols := MGR_Cols+0
     g.layout.rows := MGR_Rows+0
-    g.monitor := MGR_Mon+0
-    g.gapX := MGR_GapX+0
-    g.gapY := MGR_GapY+0
-    g.scale := MGR_Scale+0.0
+    g.monitor     := MGR_Mon+0
+    g.gapX        := MGR_GapX+0
+    g.gapY        := MGR_GapY+0
+    g.scale       := MGR_Scale+0.0
     Groups[SelectedGroup] := g
     ShowGroupStatus()
 }
+
 
 ; ---- Manager events ----
 MGR_OnAutoRetile:
@@ -1923,36 +1933,43 @@ return
 ; ---- Persistence (INI) ----
 SaveConfig() {
     global CFG_FILE, Groups, AUTO_RETILE
-    FileDelete, %CFG_FILE%
+
     if (CFG_FILE = "")
         CFG_FILE := ResolveConfigPath()
 
+    tmp := CFG_FILE ".tmp"
+    FileDelete, %tmp%
+
     ; General settings
-    IniWrite, % (AUTO_RETILE ? 1 : 0), %CFG_FILE%, General, AutoRetile
+    IniWrite, % (AUTO_RETILE ? 1 : 0), %tmp%, General, AutoRetile
 
     ; Groups
     for name, g in Groups {
         section := "Group:" name
-        IniWrite, % (g.enabled ? 1 : 0), %CFG_FILE%, %section%, Enabled
-        IniWrite, % JoinPipe(g.members), %CFG_FILE%, %section%, Members
-        IniWrite, % (g.region="") ? "" : g.region, %CFG_FILE%, %section%, Region
-        IniWrite, % g.layout.mode, %CFG_FILE%, %section%, Layout
-        IniWrite, % g.layout.cols, %CFG_FILE%, %section%, Cols
-        IniWrite, % g.layout.rows, %CFG_FILE%, %section%, Rows
-        IniWrite, % g.monitor, %CFG_FILE%, %section%, Monitor
-        IniWrite, % g.gapX, %CFG_FILE%, %section%, GapX
-        IniWrite, % g.gapY, %CFG_FILE%, %section%, GapY
-        IniWrite, % g.scale, %CFG_FILE%, %section%, Scale
+        IniWrite, % (g.enabled ? 1 : 0), %tmp%, %section%, Enabled
+        IniWrite, % JoinPipe(g.members), %tmp%, %section%, Members
+        IniWrite, % (g.region="") ? "" : g.region, %tmp%, %section%, Region
+        IniWrite, % g.layout.mode, %tmp%, %section%, Layout
+        IniWrite, % g.layout.cols, %tmp%, %section%, Cols
+        IniWrite, % g.layout.rows, %tmp%, %section%, Rows
+        IniWrite, % g.monitor, %tmp%, %section%, Monitor
+        IniWrite, % g.gapX, %tmp%, %section%, GapX
+        IniWrite, % g.gapY, %tmp%, %section%, GapY
+        IniWrite, % g.scale, %tmp%, %section%, Scale
+
         if (g.HasKey("fixed")) {
             idx := 0
             for t, xywh in g.fixed {
                 idx++
-                IniWrite, % t "|||" xywh, %CFG_FILE%, %section%, Fixed_%idx%
+                IniWrite, % t "|||" xywh, %tmp%, %section%, Fixed_%idx%
             }
         }
     }
-}
 
+    ; swap in atomically
+    FileDelete, %CFG_FILE%
+    FileMove, %tmp%, %CFG_FILE%, 1
+}
 
 ; ============================================================
 ; LaunchTiles_NoClose — flexible grid overrides + clean math
@@ -2373,11 +2390,9 @@ LaunchGroup(name) {
         return
     }
 
-    DBG_StartSession("Group=" . name, g.members.Length())
-
     region := g.region
     if (region = "") {
-        region := PickRegion_TwoClick()
+        region := PickRegion_WithGuard()
         if (region = "") {
             StartAutoRetile(), IsLaunching := 0
             return
@@ -2462,7 +2477,6 @@ LaunchGroup(name) {
             Sleep, 120
         }
         GroupPIDs[name] := out
-        DBG_ShowSummary("Group=" . name)
 
         ; restore + resume
         TARGET_MONITOR := oldMon
@@ -2497,7 +2511,6 @@ LaunchGroup(name) {
             out.Push({ pid: pids[i], title: tile.title })
     }
     GroupPIDs[name] := out
-    DBG_ShowSummary("Group=" . name)
 
     ; restore + resume
     TARGET_MONITOR := oldMon
@@ -2512,6 +2525,3 @@ LaunchGroup(name) {
     StartAutoRetile()
     IsLaunching := 0
 }
-
-
-
