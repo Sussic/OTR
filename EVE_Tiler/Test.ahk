@@ -50,6 +50,7 @@ Picker_hLV := 0
 LABEL_COLOR   := "FFFF00"  ; default yellow
 LABEL_OFF_X   := 8
 LABEL_OFF_Y   := 6
+ENABLE_LABEL_OVERLAYS := 0    ; 0 = off (faster), 1 = on
 SetTitleMatchMode, 3   ; exact window titles only
 DEBUG_VERBOSE := 0
 
@@ -72,7 +73,7 @@ MGR_GapX   := GAP_X
 MGR_GapY   := GAP_Y
 MGR_Scale  := REGION_SCALE
 GroupPIDs := {}            ; map name -> [pid,...] for launched clones
-MGR_Accumulate := 1        ; checkbox: keep existing clones when tiling
+MGR_Accumulate := 0        ; checkbox: keep existing clones when tiling
 HIDE_FROM_ALTTAB := 0      ; 1 = hide clones from Alt-Tab by using WS_EX_TOOLWINDOW
 AUTO_RETILE := 1           ; default ON (persisted in INI)
 __WATCH_INTERVAL := 500    ; ms, poll rate for client window changes
@@ -125,10 +126,17 @@ if (DEBUG) {
     MsgBox, 64, EVE Tiler (debug), % "CFG_FILE:`n" CFG_FILE "`nExists: " (FileExist(CFG_FILE) ? "YES" : "NO")
 }
 
+; --- NEW: load groups on startup and immediately tile enabled groups ---
+LoadConfig()          ; fill Groups[] from config.ini
+StartAutoRetile()     ; start watcher/timer
 
-StartAutoRetile()   ; now runs properly
+; Do one immediate retile pass so existing clients get tiled right away
+if (AUTO_RETILE)
+    Gosub, _DoRetile
 
 return               ; <--- THIS is where the auto-execute section should end
+
+
 
 _Cleanup:
     CloseLaunchedClones()
@@ -1017,6 +1025,9 @@ Overlay_StopTimerIfNone() {
 Overlay_Attach(ownerHwnd, text, colorHex:="FFFF00", offX:=8, offY:=6) {
     global Overlays, OverlaysHidden
 
+    if (!ENABLE_LABEL_OVERLAYS)
+        return 0
+
     if (!ownerHwnd || !DllCall("IsWindow","ptr",ownerHwnd))
         return 0
 
@@ -1477,7 +1488,7 @@ OpenGroupManager(reopen:=false) {
     Gui, MGR:Show, Center w820 h560
 }
 
-
+    
 CloneDefaultGroup() {
     global DEF_GROUP
     g := {}
@@ -1488,6 +1499,7 @@ CloneDefaultGroup() {
     g.gapX := DEF_GROUP.gapX
     g.gapY := DEF_GROUP.gapY
     g.scale := DEF_GROUP.scale
+    g.enabled := 1          ; <-- NEW: new groups are enabled by default
     return g
 }
 
@@ -1610,11 +1622,14 @@ _DoRetile:
                 LaunchGroup(name), tiled++
         }
     } else {
-        for name, g in Groups
-            if (g.enabled=1)
+        for name, g in Groups {
+            en := (g.HasKey("enabled") ? g.enabled : 1)  ; default ON if missing
+            if (en)
                 LaunchGroup(name), tiled++
+        }
     }
 return
+
 
 
 PersistControlsIntoGroup() {
@@ -1698,14 +1713,23 @@ MGR_OnGroupClick:
     row := LV_GetNext()
     if (!row)
         return
+
     LV_GetText(name, row)
-    ; mirror check state into Groups[name].enabled
-    checked := (LV_GetNext(row-1, "C") = row) ? 1 : 0
-    if (Groups.HasKey(name))
+
+    ; Determine whether THIS row is checked
+    firstChecked := LV_GetNext(row-1, "C")   ; first checked at/after row
+    checked := (firstChecked = row) ? 1 : 0
+
+    if (Groups.HasKey(name)) {
         Groups[name].enabled := checked
+        SelectedGroup := name
+        SaveConfig()              ; <-- immediately persist the tick/untick
+    }
+
     SelectGroupInLV(name)
     ApplyGroupSettingsToControls(name)
 return
+
 
 MGR_OnLayoutChoice:
     PersistControlsIntoGroup()
@@ -2273,9 +2297,11 @@ LoadConfig() {
         AUTO_RETILE := 1
         ; Seed a default group if no config exists
         Groups["Main"] := CloneDefaultGroup()
+        Groups["Main"].enabled := 1      ; <-- ensure Main is enabled
         Log("LoadConfig: NO config file at " . CFG_FILE . " -> seeded default 'Main'")
         return
     }
+
 
     ; ---- Parse groups ----
     FileRead, __cfg, %CFG_FILE%
@@ -2294,7 +2320,9 @@ LoadConfig() {
             if (name = "")
                 continue
 
-            IniRead, en,   %CFG_FILE%, %sect%, Enabled, 0
+            IniRead, en,   %CFG_FILE%, %sect%, Enabled, 1
+            if (en = "ERROR" || en = "")
+                en := 1
             IniRead, mem,  %CFG_FILE%, %sect%, Members,
             IniRead, reg,  %CFG_FILE%, %sect%, Region,
             IniRead, lay,  %CFG_FILE%, %sect%, Layout, auto
@@ -2520,4 +2548,3 @@ LaunchGroup(name) {
     StartAutoRetile()
     IsLaunching := 0
 }
-
